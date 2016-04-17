@@ -51,7 +51,7 @@ stat str xs =
 
 -- The bit rate comes from staring at the data...
 bitRate :: Integer
-bitRate = 100 -- Very convenient.
+bitRate = 50 -- Very convenient.
 
 -- Print the timing stats for the transitions, make sure the buckets
 -- are nice and distinct...
@@ -64,6 +64,19 @@ printBitStats transitions = do
   stat "Medium" medium
   putStrLn $ "Slows " ++ show slow
 
+-- Convert the timings to distinct multiples of the bit rate
+toBaseBitRate :: [Integer] -> [Integer]
+toBaseBitRate = map (\x -> (x + bitRate `div` 2) `div` bitRate)
+
+-- Convert the timings into an actual bit pattern...
+toBitPattern :: [Integer] -> [Bool]
+toBitPattern = concatMap (\i -> True :
+                                (take (fromIntegral $ i - 1) $ repeat False))
+
+-- Convenience...
+prettyBits :: [Bool] -> String
+prettyBits = map (\x -> if x then '1' else '0')
+
 main = do
   -- Get the raw data...
   content <- filter (/= '\r') <$> readFile "floppy.csv"
@@ -73,3 +86,5 @@ main = do
   let transitions = transitionTimes $ denoise doubleData
   -- Get stats on the transitions - they should group nicely...
   printBitStats transitions
+  mapM_ (putStrLn . show) $ toBaseBitRate transitions
+  putStrLn $ prettyBits $ toBitPattern $ toBaseBitRate transitions
