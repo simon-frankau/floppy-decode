@@ -17,6 +17,7 @@ words' s = case dropWhile (== ',') s of
 -- Or, with a pile of encoding overhead, 377Kb per track
 -- -> Expect 2MHz or so.
 
+-- These numbers come from looking at the data...
 highHyst :: Double
 highHyst = 0.3
 lowHyst :: Double
@@ -43,8 +44,25 @@ transitionTimes = tt 0 False
     tt _ _ [] =
       []
 
+-- Print the extrema in the list of data
+stat :: String -> [Integer] -> IO ()
 stat str xs =
   putStrLn $ str ++ ": " ++ (show $ minimum xs) ++ " " ++ (show $ maximum xs)
+
+-- The bit rate comes from staring at the data...
+bitRate :: Integer
+bitRate = 100 -- Very convenient.
+
+-- Print the timing stats for the transitions, make sure the buckets
+-- are nice and distinct...
+printBitStats :: [Integer] -> IO ()
+printBitStats transitions = do
+  let fast = filter (< 125) transitions
+  let medium = filter (\x -> x >= 125 && x < 175) transitions
+  let slow = filter (>= 175) transitions
+  stat "Fast" fast
+  stat "Medium" medium
+  putStrLn $ "Slows " ++ show slow
 
 main = do
   -- Get the raw data...
@@ -54,9 +72,4 @@ main = do
   let doubleData = (read . (!! 2)) <$> lineData :: [Double]
   let transitions = transitionTimes $ denoise doubleData
   -- Get stats on the transitions - they should group nicely...
-  let fast = filter (< 125) transitions
-  let medium = filter (\x -> x >= 125 && x < 175) transitions
-  let slow = filter (>= 175) transitions
-  stat "Fast" fast
-  stat "Medium" medium
-  putStrLn $ "Slows " ++ show slow
+  printBitStats transitions
