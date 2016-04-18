@@ -76,6 +76,13 @@ toBitPattern :: [Integer] -> [Bool]
 toBitPattern = concatMap (\i -> True :
                                 (take (fromIntegral $ i - 1) $ repeat False))
 
+-- Argh, I think there's a timing issue, possibly caused by
+-- overwriting the sector?
+patchTiming :: [Integer] -> [Integer]
+patchTiming (2:2:6:xs) = xs
+patchTiming (x:xs) = x : patchTiming xs
+patchTiming [] = []
+
 -- Convenience...
 prettyBits :: [Bool] -> String
 prettyBits = map (\x -> if x then '1' else '0')
@@ -161,7 +168,7 @@ readSectorBody :: [Integer] -> Either String ([Integer], [Integer])
 readSectorBody xs = do
   xs' <- skipGapAndSync xs
   let (dam, rest) = splitAt 4 xs'
-  if dam /= [0xa1, 0xa1, 0xa1, 0xfb] && dam /= [0xa1, 0xa1, 0xa1, 0xf8] && False -- TODO - This is not what we see, tweaking to get around it for the moment...
+  if dam /= [0xa1, 0xa1, 0xa1, 0xfb] && dam /= [0xa1, 0xa1, 0xa1, 0xf8]
    then Left $ "Expected DAM, got " ++ show dam
    else do
      let (content, rest') = splitAt 512 rest
@@ -195,7 +202,7 @@ main = do
   printBitStats transitions
   -- And print the data
   let byteStream = map numberify $ byteify $ unMFM $ getSync $ toBitPattern $
-                   toBaseBitRate transitions
+                   patchTiming $ toBaseBitRate transitions
   putStrLn $ show $ toBaseBitRate transitions
   putStrLn $ show $ byteStream
   putStrLn $ show $ readImage byteStream
