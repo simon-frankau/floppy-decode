@@ -16,6 +16,9 @@ words' s = case dropWhile (== ',') s of
 -- That's around 18.8KB per track.
 -- Or, with a pile of encoding overhead, 377Kb per track
 -- -> Expect 2MHz or so.
+--
+-- TODO: Calc properly, with real-world overheads
+-- Also, I've forgotten disks are double-sided...
 
 -- These numbers come from looking at the data...
 highHyst :: Double
@@ -77,6 +80,23 @@ toBitPattern = concatMap (\i -> True :
 prettyBits :: [Bool] -> String
 prettyBits = map (\x -> if x then '1' else '0')
 
+-- Sync is 4E
+-- That is, 01001110
+-- With MFM, this becomes 0010010010101001
+--                        . . . . . . . .
+
+-- We'll look for the sync byte repeated 5 times, ignoring the fact that
+-- it might appear in real data, etc.
+syncPattern :: [Bool]
+syncPattern = concat $ take 5 $ repeat oneSync where
+  oneSync = map (== '1') "0010010010101001"
+
+isSynced :: [Bool] -> Bool
+isSynced xs = take (length syncPattern) xs == syncPattern
+
+getSync :: [Bool] -> [Bool]
+getSync = head . filter isSynced . L.tails
+
 main = do
   -- Get the raw data...
   content <- filter (/= '\r') <$> readFile "floppy.csv"
@@ -87,4 +107,4 @@ main = do
   -- Get stats on the transitions - they should group nicely...
   printBitStats transitions
   mapM_ (putStrLn . show) $ toBaseBitRate transitions
-  putStrLn $ prettyBits $ toBitPattern $ toBaseBitRate transitions
+  putStrLn $ prettyBits $ getSync $ toBitPattern $ toBaseBitRate transitions
