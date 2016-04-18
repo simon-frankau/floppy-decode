@@ -97,6 +97,20 @@ isSynced xs = take (length syncPattern) xs == syncPattern
 getSync :: [Bool] -> [Bool]
 getSync = head . filter isSynced . L.tails
 
+-- Remove the sync bits, un-MFMing the data stream
+unMFM :: [Bool] -> [Bool]
+unMFM (x:_:xs) = x : unMFM xs
+unMFM xs = xs
+
+-- Group into bytes
+byteify :: [Bool] -> [[Bool]]
+byteify [] = []
+byteify xs = b : byteify rest where (b, rest) = L.splitAt 8 xs
+
+-- Make a bit stream into a number
+numberify :: [Bool] -> Integer
+numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
+
 main = do
   -- Get the raw data...
   content <- filter (/= '\r') <$> readFile "floppy.csv"
@@ -106,5 +120,6 @@ main = do
   let transitions = transitionTimes $ denoise doubleData
   -- Get stats on the transitions - they should group nicely...
   printBitStats transitions
-  mapM_ (putStrLn . show) $ toBaseBitRate transitions
-  putStrLn $ prettyBits $ getSync $ toBitPattern $ toBaseBitRate transitions
+  -- And print the data
+  putStrLn $ show $ map numberify $ byteify $ unMFM $ getSync $ toBitPattern $
+             toBaseBitRate transitions
