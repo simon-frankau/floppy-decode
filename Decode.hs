@@ -111,6 +111,79 @@ byteify xs = b : byteify rest where (b, rest) = L.splitAt 8 xs
 numberify :: [Bool] -> Integer
 numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
 
+-- Gap 4A = 80 bytes 0x4E
+-- Sync = 12 bytes 0x00
+-- IAM = 4 bytes: C2 C2 C2 FC
+-- GAP1 = 50 bytes 4E
+-- Sector:
+-- Sync = 12 bytes 0x00
+-- IDAM = 4 bytes A1 A1 A1 FE
+-- ID = 4 bytes of cylinder, head, sector, sector-size
+-- CRC = 2 bytes
+-- GAP 2 = 22 bytes of 4E
+-- Sync = 12 bytes 00
+-- DAM = 4 bytes A1 A1 A1 F[B8]
+-- 512 bytes of data
+-- CRC = 2 bytes
+-- GAP 3 = 80 bytes 4E
+
+skipGap :: [Integer] -> Either String [Integer]
+skipGap = return . dropWhile (== 0x4e)
+
+skipGapAndSync :: [Integer] -> Either String [Integer]
+skipGapAndSync xs = do
+  xs' <- skipGap xs
+  let (sync, rest) = splitAt 12 xs'
+  if sync /= replicate 12 0x00
+   then Left $ "Expected sync, got " ++ show sync
+   else return rest
+
+skipHeader :: [Integer] -> Either String [Integer]
+skipHeader xs = do
+  xs' <- skipGapAndSync xs
+  let (iam, rest) = splitAt 4 xs'
+  if iam /= [0xc2, 0xc2, 0xc2, 0xfc]
+   then Left $ "Expected IAM, got " ++ show iam
+   else return rest
+
+readSectorHeader :: [Integer] -> Either String (String, [Integer])
+readSectorHeader xs = do
+  xs' <- skipGapAndSync xs
+  let (idam, rest) = splitAt 4 xs'
+  if idam /= [0xa1, 0xa1, 0xa1, 0xfe]
+   then Left $ "Expected IDAM, got " ++ show idam
+   else do
+     let (sectorId, rest') = splitAt 4 rest
+     -- Skip CRC
+     return (show sectorId, drop 2 rest')
+
+readSectorBody :: [Integer] -> Either String ([Integer], [Integer])
+readSectorBody xs = do
+  xs' <- skipGapAndSync xs
+  let (dam, rest) = splitAt 4 xs'
+  if dam /= [0xa1, 0xa1, 0xa1, 0xfb] && dam /= [0xa1, 0xa1, 0xa1, 0xf8] && False -- TODO - This is not what we see, tweaking to get around it for the moment...
+   then Left $ "Expected DAM, got " ++ show dam
+   else do
+     let (content, rest') = splitAt 512 rest
+     -- Skip CRC
+     return (content, drop 2 rest')
+
+readImage :: [Integer] -> Either String [(String, [Integer])]
+readImage xs = do
+  xs' <- skipHeader xs
+  readImageAux xs'
+    where
+      readImageAux [] = return []
+      readImageAux xs = do
+        (hdr, xs') <- readSectorHeader xs
+        (content, xs'') <- readSectorBody xs'
+        others <- readImageAux xs''
+        return $ (hdr, content) : others
+
+writeBinary :: [Integer] -> IO ()
+writeBinary xs = do
+  writeFile "floppy.img" $ map (toEnum . fromInteger) xs
+
 main = do
   -- Get the raw data...
   content <- filter (/= '\r') <$> readFile "floppy.csv"
@@ -121,5 +194,10 @@ main = do
   -- Get stats on the transitions - they should group nicely...
   printBitStats transitions
   -- And print the data
-  putStrLn $ show $ map numberify $ byteify $ unMFM $ getSync $ toBitPattern $
-             toBaseBitRate transitions
+  let byteStream = map numberify $ byteify $ unMFM $ getSync $ toBitPattern $
+                   toBaseBitRate transitions
+  putStrLn $ show $ toBaseBitRate transitions
+  putStrLn $ show $ byteStream
+  putStrLn $ show $ readImage byteStream
+  let Right [(_, blah)] = readImage byteStream
+  writeBinary blah
