@@ -37,8 +37,7 @@ lowHyst = 0.08
 
 -- Smooth the sequences of samples, eliminate point noise stuff
 denoise :: [Double] -> [Double]
-denoise (x:y:rest) = (x + y)/2 : denoise rest
-denoise x = x
+denoise = map (minimum . take 5) . L.tails
 
 -- Given a stream of numbers, and a high and low hysteresis point,
 -- find the time between low transitions.
@@ -252,13 +251,14 @@ writeBinary xs = do
 
 main = do
   -- Get the raw data...
-  content <- filter (/= '\r') <$> readFile "floppy.csv"
+  content <- filter (/= '\r') <$> readFile "floppy2.csv"
   let lineData = words' <$> (drop 2 $ lines content)
   -- We only care about the data channel, and want it as doubles...
-  let doubleData = (read . (!! 2)) <$> lineData :: [Double]
+  let doubleData = (read . (!! 1)) <$> lineData :: [Double]
   let transitions = transitionTimes $ denoise doubleData
+  mapM_ (putStrLn . show . (*1000)) $ denoise doubleData
   -- Get stats on the transitions - they should group nicely...
-  printBitStats transitions
+  -- printBitStats transitions
   -- And print the data
   let bitStream = toBitPattern $ toBaseBitRate transitions
   putStrLn $ show $ toBaseBitRate transitions
