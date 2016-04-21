@@ -2,7 +2,9 @@ module Main where
 
 import Control.Applicative
 import Control.Monad.Trans.Class
+import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Lazy
+import Control.Monad.Trans.Writer.Lazy
 import qualified Data.List as L
 
 ------------------------------------------------------------------------
@@ -139,8 +141,15 @@ numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
 -- CRC = 2 bytes
 -- GAP 3 = 80 bytes 4E
 
--- State holds the bit stream, Either manages errors
-type DiskM = StateT [Bool] (Either String)
+data Log = Note String
+           deriving (Show, Eq, Ord)
+
+-- State holds the bit stream, ExceptT handles errors, Writer holds
+-- the log of events...
+type DiskM = StateT [Bool] (ExceptT String (Writer [Log]))
+
+record :: Log -> DiskM ()
+record = lift . lift . tell . (:[])
 
 readBits :: Int -> DiskM [Bool]
 readBits i = state $ splitAt i
@@ -169,8 +178,8 @@ expect what (e:es) = do
   val <- readInt
   if val == e
    then expect what es
-   else lift $ Left $ "Expected " ++ what ++ ", got " ++
-                    show val ++ " instead of " ++ show e
+   else lift . throwE $ "Expected " ++ what ++ ", got " ++
+                         show val ++ " instead of " ++ show e
 expect _ [] = return ()
 
 skipGap :: DiskM ()
@@ -179,8 +188,6 @@ skipGap = do
   if succeeded
    then skipGap
    else return ()
-
--- TODO: Maybe String stuff needs to be totally redone.
 
 skipGapAndSync :: DiskM ()
 skipGapAndSync = do
@@ -199,6 +206,7 @@ readSectorHeader = do
   sectorId <- readInts 4
   -- Skip CRC
   readInts 2
+  record $ Note $ "Read sector head for sector " ++ show sectorId
   return $ show sectorId
 
 readSectorBody :: DiskM [Integer]
@@ -207,9 +215,10 @@ readSectorBody = do
   expect "DAM" [0xa1, 0xa1, 0xa1]
   b <- readInt
   if b /= 0xfb && b /= 0xf8
-   then lift $ Left $ "Expected DAM, got " ++ show b
+   then lift . throwE $ "Expected DAM, got " ++ show b
    else do
      res <- readInts 512
+     record $ Note "Read sector body"
      -- Skip CRC
      readInts 2
      return res
@@ -247,6 +256,6 @@ main = do
                   patchTiming $ toBaseBitRate transitions
   putStrLn $ show $ toBaseBitRate transitions
   putStrLn $ show $ prettyBits bitStream
-  putStrLn $ show $ runStateT readImage bitStream
-  let Right [(_, blah)] = evalStateT readImage bitStream
+  putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
+  let (Right [(_, blah)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
   writeBinary blah
