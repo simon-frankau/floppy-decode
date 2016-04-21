@@ -1,7 +1,12 @@
 module Main where
 
 import Control.Applicative
+import Control.Monad.Trans.State.Lazy
 import qualified Data.List as L
+
+------------------------------------------------------------------------
+-- Transform the data into a bitstream
+--
 
 words' :: String -> [String]
 words' s = case dropWhile (== ',') s of
@@ -76,6 +81,10 @@ toBitPattern :: [Integer] -> [Bool]
 toBitPattern = concatMap (\i -> True :
                                 (take (fromIntegral $ i - 1) $ repeat False))
 
+------------------------------------------------------------------------
+-- Interpret the bit stream
+--
+
 -- Argh, I think there's a timing issue, possibly caused by
 -- overwriting the sector?
 patchTiming :: [Integer] -> [Integer]
@@ -130,81 +139,89 @@ numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
 -- CRC = 2 bytes
 -- GAP 3 = 80 bytes 4E
 
-readInt :: [Bool] -> (Integer, [Bool])
-readInt xs = (val, rest)
-  where
-    (bits, rest) = splitAt 16 xs
-    val = numberify $ unMFM bits
+readBits :: Int -> State [Bool] [Bool]
+readBits i = state $ splitAt i
 
-readInts :: Integer -> [Bool] -> ([Integer], [Bool])
-readInts 0 xs = ([], xs)
-readInts i xs = (val : vals, rest')
-  where
-    (val, rest) = readInt xs
-    (vals, rest') = readInts (i-1) rest
+readInt :: State [Bool] Integer
+readInt = (numberify . unMFM) <$> readBits 16
 
-tryRead :: Integer -> [Bool] -> Maybe [Bool]
-tryRead expect input =
-  if val == expect then Just rest else Nothing
-    where
-      (val, rest) = readInt input
+readInts :: Integer -> State [Bool] [Integer]
+readInts i = sequence $ replicate (fromInteger i) readInt
 
-expect :: String -> [Integer] -> [Bool] -> Either String [Bool]
-expect what (e:es) xs =
-  if val == e
-   then expect what es xs'
-   else Left $ "Expected " ++ what ++ ", got " ++
-        show val ++ " instead of " ++ show e
-  where
-    (val, xs') = readInt xs
-expect _ [] xs = return xs
-
-skipGap :: [Bool] -> Either String [Bool]
-skipGap xs = case tryRead 0x4E xs of
-               Just xs' -> skipGap xs'
-               Nothing  -> return xs
-
-skipGapAndSync :: [Bool] -> Either String [Bool]
-skipGapAndSync xs = do
-  xs' <- skipGap xs
-  expect "sync" (replicate 12 0x00) xs'
-
-skipHeader :: [Bool] -> Either String [Bool]
-skipHeader xs = do
-  xs' <- skipGapAndSync xs
-  expect "IAM" [0xc2, 0xc2, 0xc2, 0xfc] xs'
-
-readSectorHeader :: [Bool] -> Either String (String, [Bool])
-readSectorHeader xs = do
-  xs' <- skipGapAndSync xs
-  xs'' <- expect "IDAM" [0xa1, 0xa1, 0xa1, 0xfe] xs'
-  -- Skip CRC
-  let (sectorId, rest) = readInts 4 xs''
-  return (show sectorId, snd $ readInts 2 rest)
-
-readSectorBody :: [Bool] -> Either String ([Integer], [Bool])
-readSectorBody xs = do
-  xs' <- skipGapAndSync xs
-  rest <- expect "DAM" [0xa1, 0xa1, 0xa1] xs'
-  let (b, rest') = readInt rest
-  if b /= 0xfb && b /= 0xf8
-   then Left $ "Expected DAM, got " ++ show b
+tryRead :: Integer -> State [Bool] Bool
+tryRead expect = do
+  oldState <- get
+  i <- readInt
+  if i == expect
+   then return True
    else do
-     let (content, rest'') = readInts 512 rest'
-     -- Skip CRC
-     return (content, snd $ readInts 2 rest'')
+     put oldState
+     return False
 
-readImage :: [Bool] -> Either String [(String, [Integer])]
-readImage xs = do
-  xs' <- skipHeader xs
-  readImageAux xs'
+expect :: String -> [Integer] -> State [Bool] (Maybe String)
+expect what (e:es) = do
+  val <- readInt
+  if val == e
+   then expect what es
+   else return $ Just $ "Expected " ++ what ++ ", got " ++
+                 show val ++ " instead of " ++ show e
+expect _ [] = return Nothing
+
+skipGap :: State [Bool] (Maybe String)
+skipGap = do
+  succeeded <- tryRead 0x4E
+  if succeeded
+   then skipGap
+   else return Nothing
+
+-- TODO: Maybe String stuff needs to be totally redone.
+
+skipGapAndSync :: State [Bool] (Maybe String)
+skipGapAndSync = do
+  skipGap
+  expect "sync" (replicate 12 0x00)
+
+skipHeader :: State [Bool] (Maybe String)
+skipHeader = do
+  skipGapAndSync
+  expect "IAM" [0xc2, 0xc2, 0xc2, 0xfc]
+
+readSectorHeader :: State [Bool] String
+readSectorHeader = do
+  skipGapAndSync
+  expect "IDAM" [0xa1, 0xa1, 0xa1, 0xfe]
+  sectorId <- readInts 4
+  -- Skip CRC
+  readInts 2
+  return $ show sectorId
+
+readSectorBody :: State [Bool] [Integer]
+readSectorBody = do
+  skipGapAndSync
+  expect "DAM" [0xa1, 0xa1, 0xa1]
+  b <- readInt
+  if b /= 0xfb && b /= 0xf8
+   then return [] -- $ Left $ "Expected DAM, got " ++ show b
+   else do
+     res <- readInts 512
+     -- Skip CRC
+     readInts 2
+     return res
+
+readImage :: State [Bool] [(String, [Integer])]
+readImage = do
+  skipHeader
+  readImageAux
     where
-      readImageAux [] = return []
-      readImageAux xs = do
-        (hdr, xs') <- readSectorHeader xs
-        (content, xs'') <- readSectorBody xs'
-        others <- readImageAux xs''
-        return $ (hdr, content) : others
+      readImageAux = do
+        s <- get
+        if s == []
+         then return []
+         else do
+           hdr <- readSectorHeader
+           content <- readSectorBody
+           others <- readImageAux
+           return $ (hdr, content) : others
 
 writeBinary :: [Integer] -> IO ()
 writeBinary xs = do
@@ -224,6 +241,6 @@ main = do
                   patchTiming $ toBaseBitRate transitions
   putStrLn $ show $ toBaseBitRate transitions
   putStrLn $ show $ prettyBits bitStream
-  putStrLn $ show $ readImage bitStream
-  let Right [(_, blah)] = readImage bitStream
+  putStrLn $ show $ runState readImage bitStream
+  let [(_, blah)] = evalState readImage bitStream
   writeBinary blah
