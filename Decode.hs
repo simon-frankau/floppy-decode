@@ -109,14 +109,10 @@ unMFM :: [Bool] -> [Bool]
 unMFM (x:_:xs) = x : unMFM xs
 unMFM xs = xs
 
--- Group into bytes
-byteify :: [Bool] -> [[Bool]]
-byteify [] = []
-byteify xs = b : byteify rest where (b, rest) = L.splitAt 8 xs
-
 -- Make a bit stream into a number
 numberify :: [Bool] -> Integer
 numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
+
 
 -- Gap 4A = 80 bytes 0x4E
 -- Sync = 12 bytes 0x00
@@ -134,48 +130,71 @@ numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
 -- CRC = 2 bytes
 -- GAP 3 = 80 bytes 4E
 
-skipGap :: [Integer] -> Either String [Integer]
-skipGap = return . dropWhile (== 0x4e)
+readInt :: [Bool] -> (Integer, [Bool])
+readInt xs = (val, rest)
+  where
+    (bits, rest) = splitAt 16 xs
+    val = numberify $ unMFM bits
 
-skipGapAndSync :: [Integer] -> Either String [Integer]
+readInts :: Integer -> [Bool] -> ([Integer], [Bool])
+readInts 0 xs = ([], xs)
+readInts i xs = (val : vals, rest')
+  where
+    (val, rest) = readInt xs
+    (vals, rest') = readInts (i-1) rest
+
+tryRead :: Integer -> [Bool] -> Maybe [Bool]
+tryRead expect input =
+  if val == expect then Just rest else Nothing
+    where
+      (val, rest) = readInt input
+
+expect :: String -> [Integer] -> [Bool] -> Either String [Bool]
+expect what (e:es) xs =
+  if val == e
+   then expect what es xs'
+   else Left $ "Expected " ++ what ++ ", got " ++
+        show val ++ " instead of " ++ show e
+  where
+    (val, xs') = readInt xs
+expect _ [] xs = return xs
+
+skipGap :: [Bool] -> Either String [Bool]
+skipGap xs = case tryRead 0x4E xs of
+               Just xs' -> skipGap xs'
+               Nothing  -> return xs
+
+skipGapAndSync :: [Bool] -> Either String [Bool]
 skipGapAndSync xs = do
   xs' <- skipGap xs
-  let (sync, rest) = splitAt 12 xs'
-  if sync /= replicate 12 0x00
-   then Left $ "Expected sync, got " ++ show sync
-   else return rest
+  expect "sync" (replicate 12 0x00) xs'
 
-skipHeader :: [Integer] -> Either String [Integer]
+skipHeader :: [Bool] -> Either String [Bool]
 skipHeader xs = do
   xs' <- skipGapAndSync xs
-  let (iam, rest) = splitAt 4 xs'
-  if iam /= [0xc2, 0xc2, 0xc2, 0xfc]
-   then Left $ "Expected IAM, got " ++ show iam
-   else return rest
+  expect "IAM" [0xc2, 0xc2, 0xc2, 0xfc] xs'
 
-readSectorHeader :: [Integer] -> Either String (String, [Integer])
+readSectorHeader :: [Bool] -> Either String (String, [Bool])
 readSectorHeader xs = do
   xs' <- skipGapAndSync xs
-  let (idam, rest) = splitAt 4 xs'
-  if idam /= [0xa1, 0xa1, 0xa1, 0xfe]
-   then Left $ "Expected IDAM, got " ++ show idam
-   else do
-     let (sectorId, rest') = splitAt 4 rest
-     -- Skip CRC
-     return (show sectorId, drop 2 rest')
+  xs'' <- expect "IDAM" [0xa1, 0xa1, 0xa1, 0xfe] xs'
+  -- Skip CRC
+  let (sectorId, rest) = readInts 4 xs''
+  return (show sectorId, snd $ readInts 2 rest)
 
-readSectorBody :: [Integer] -> Either String ([Integer], [Integer])
+readSectorBody :: [Bool] -> Either String ([Integer], [Bool])
 readSectorBody xs = do
   xs' <- skipGapAndSync xs
-  let (dam, rest) = splitAt 4 xs'
-  if dam /= [0xa1, 0xa1, 0xa1, 0xfb] && dam /= [0xa1, 0xa1, 0xa1, 0xf8]
-   then Left $ "Expected DAM, got " ++ show dam
+  rest <- expect "DAM" [0xa1, 0xa1, 0xa1] xs'
+  let (b, rest') = readInt rest
+  if b /= 0xfb && b /= 0xf8
+   then Left $ "Expected DAM, got " ++ show b
    else do
-     let (content, rest') = splitAt 512 rest
+     let (content, rest'') = readInts 512 rest'
      -- Skip CRC
-     return (content, drop 2 rest')
+     return (content, snd $ readInts 2 rest'')
 
-readImage :: [Integer] -> Either String [(String, [Integer])]
+readImage :: [Bool] -> Either String [(String, [Integer])]
 readImage xs = do
   xs' <- skipHeader xs
   readImageAux xs'
@@ -201,10 +220,10 @@ main = do
   -- Get stats on the transitions - they should group nicely...
   printBitStats transitions
   -- And print the data
-  let byteStream = map numberify $ byteify $ unMFM $ getSync $ toBitPattern $
-                   patchTiming $ toBaseBitRate transitions
+  let bitStream = getSync $ toBitPattern $
+                  patchTiming $ toBaseBitRate transitions
   putStrLn $ show $ toBaseBitRate transitions
-  putStrLn $ show $ byteStream
-  putStrLn $ show $ readImage byteStream
-  let Right [(_, blah)] = readImage byteStream
+  putStrLn $ show $ prettyBits bitStream
+  putStrLn $ show $ readImage bitStream
+  let Right [(_, blah)] = readImage bitStream
   writeBinary blah
