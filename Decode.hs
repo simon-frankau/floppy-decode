@@ -1,6 +1,7 @@
 module Main where
 
 import Control.Applicative
+import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Lazy
 import qualified Data.List as L
 
@@ -122,7 +123,6 @@ unMFM xs = xs
 numberify :: [Bool] -> Integer
 numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
 
-
 -- Gap 4A = 80 bytes 0x4E
 -- Sync = 12 bytes 0x00
 -- IAM = 4 bytes: C2 C2 C2 FC
@@ -139,16 +139,22 @@ numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
 -- CRC = 2 bytes
 -- GAP 3 = 80 bytes 4E
 
-readBits :: Int -> State [Bool] [Bool]
+-- State holds the bit stream, Either manages errors
+type DiskM = StateT [Bool] (Either String)
+
+readBits :: Int -> DiskM [Bool]
 readBits i = state $ splitAt i
 
-readInt :: State [Bool] Integer
+finished :: DiskM Bool
+finished = null <$> get
+
+readInt :: DiskM Integer
 readInt = (numberify . unMFM) <$> readBits 16
 
-readInts :: Integer -> State [Bool] [Integer]
+readInts :: Integer -> DiskM [Integer]
 readInts i = sequence $ replicate (fromInteger i) readInt
 
-tryRead :: Integer -> State [Bool] Bool
+tryRead :: Integer -> DiskM Bool
 tryRead expect = do
   oldState <- get
   i <- readInt
@@ -158,35 +164,35 @@ tryRead expect = do
      put oldState
      return False
 
-expect :: String -> [Integer] -> State [Bool] (Maybe String)
+expect :: String -> [Integer] -> DiskM ()
 expect what (e:es) = do
   val <- readInt
   if val == e
    then expect what es
-   else return $ Just $ "Expected " ++ what ++ ", got " ++
-                 show val ++ " instead of " ++ show e
-expect _ [] = return Nothing
+   else lift $ Left $ "Expected " ++ what ++ ", got " ++
+                    show val ++ " instead of " ++ show e
+expect _ [] = return ()
 
-skipGap :: State [Bool] (Maybe String)
+skipGap :: DiskM ()
 skipGap = do
   succeeded <- tryRead 0x4E
   if succeeded
    then skipGap
-   else return Nothing
+   else return ()
 
 -- TODO: Maybe String stuff needs to be totally redone.
 
-skipGapAndSync :: State [Bool] (Maybe String)
+skipGapAndSync :: DiskM ()
 skipGapAndSync = do
   skipGap
   expect "sync" (replicate 12 0x00)
 
-skipHeader :: State [Bool] (Maybe String)
+skipHeader :: DiskM ()
 skipHeader = do
   skipGapAndSync
   expect "IAM" [0xc2, 0xc2, 0xc2, 0xfc]
 
-readSectorHeader :: State [Bool] String
+readSectorHeader :: DiskM String
 readSectorHeader = do
   skipGapAndSync
   expect "IDAM" [0xa1, 0xa1, 0xa1, 0xfe]
@@ -195,27 +201,27 @@ readSectorHeader = do
   readInts 2
   return $ show sectorId
 
-readSectorBody :: State [Bool] [Integer]
+readSectorBody :: DiskM [Integer]
 readSectorBody = do
   skipGapAndSync
   expect "DAM" [0xa1, 0xa1, 0xa1]
   b <- readInt
   if b /= 0xfb && b /= 0xf8
-   then return [] -- $ Left $ "Expected DAM, got " ++ show b
+   then lift $ Left $ "Expected DAM, got " ++ show b
    else do
      res <- readInts 512
      -- Skip CRC
      readInts 2
      return res
 
-readImage :: State [Bool] [(String, [Integer])]
+readImage :: DiskM [(String, [Integer])]
 readImage = do
   skipHeader
   readImageAux
     where
       readImageAux = do
-        s <- get
-        if s == []
+        f <- finished
+        if f
          then return []
          else do
            hdr <- readSectorHeader
@@ -241,6 +247,6 @@ main = do
                   patchTiming $ toBaseBitRate transitions
   putStrLn $ show $ toBaseBitRate transitions
   putStrLn $ show $ prettyBits bitStream
-  putStrLn $ show $ runState readImage bitStream
-  let [(_, blah)] = evalState readImage bitStream
+  putStrLn $ show $ runStateT readImage bitStream
+  let Right [(_, blah)] = evalStateT readImage bitStream
   writeBinary blah
