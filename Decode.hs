@@ -37,7 +37,7 @@ lowHyst = 0.08
 
 -- Smooth the sequences of samples, eliminate point noise stuff
 denoise :: [Double] -> [Double]
-denoise = map (minimum . take 5) . L.tails
+denoise = map (minimum . take 5) . filter (\x -> length x > 5) . L.tails
 
 -- Given a stream of numbers, and a high and low hysteresis point,
 -- find the time between low transitions.
