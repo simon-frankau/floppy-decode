@@ -42,7 +42,7 @@ denoise x = x
 
 -- Given a stream of numbers, and a high and low hysteresis point,
 -- find the time between low transitions.
-transitionTimes :: [Double] -> [Integer]
+transitionTimes :: [Double] -> [Int]
 transitionTimes = tt 0 False
   where
     tt time True (x : xs) | x < lowHyst =
@@ -57,17 +57,17 @@ transitionTimes = tt 0 False
       []
 
 -- Print the extrema in the list of data
-stat :: String -> [Integer] -> IO ()
+stat :: String -> [Int] -> IO ()
 stat str xs =
   putStrLn $ str ++ ": " ++ (show $ minimum xs) ++ " " ++ (show $ maximum xs)
 
 -- The bit rate comes from staring at the data...
-bitRate :: Integer
+bitRate :: Int
 bitRate = 50 -- Very convenient.
 
 -- Print the timing stats for the transitions, make sure the buckets
 -- are nice and distinct...
-printBitStats :: [Integer] -> IO ()
+printBitStats :: [Int] -> IO ()
 printBitStats transitions = do
   let fast = filter (< 125) transitions
   let medium = filter (\x -> x >= 125 && x < 175) transitions
@@ -77,13 +77,12 @@ printBitStats transitions = do
   putStrLn $ "Slows " ++ show slow
 
 -- Convert the timings to distinct multiples of the bit rate
-toBaseBitRate :: [Integer] -> [Integer]
+toBaseBitRate :: [Int] -> [Int]
 toBaseBitRate = map (\x -> (x + bitRate `div` 2) `div` bitRate)
 
 -- Convert the timings into an actual bit pattern...
-toBitPattern :: [Integer] -> [Bool]
-toBitPattern = concatMap (\i -> True :
-                                (take (fromIntegral $ i - 1) $ repeat False))
+toBitPattern :: [Int] -> [Bool]
+toBitPattern = concatMap (\i -> True : (replicate (i - 1) False))
 
 ------------------------------------------------------------------------
 -- Interpret the bit stream
@@ -107,11 +106,11 @@ addMFM (False : rest@(False : _)) = False : True : addMFM rest
 addMFM (x : rest) = x : False : addMFM rest
 
 -- Make a bit stream into a number
-numberify :: [Bool] -> Integer
-numberify = L.foldl' (\x y -> x * 2 + fromIntegral (fromEnum y)) 0
+numberify :: [Bool] -> Int
+numberify = L.foldl' (\x y -> x * 2 + fromEnum y) 0
 
 -- And a number into a stream
-denumberify :: Integer -> [Bool]
+denumberify :: Int -> [Bool]
 denumberify = L.reverse . take 8 .
               L.unfoldr (\x -> Just (x `mod` 2 == 1, x `div` 2))
 
@@ -150,11 +149,11 @@ peekBits i = take i <$> get
 finished :: DiskM Bool
 finished = null <$> get
 
-readByte :: DiskM Integer
+readByte :: DiskM Int
 readByte = (numberify . unMFM) <$> readBits 16
 
-readBytes :: Integer -> DiskM [Integer]
-readBytes i = sequence $ replicate (fromInteger i) readByte
+readBytes :: Int -> DiskM [Int]
+readBytes i = sequence $ replicate i readByte
 
 -- Peek bits, and read them if they're what we expect.
 tryBits :: [Bool] -> DiskM Bool
@@ -217,7 +216,7 @@ readSectorHeader = do
   record $ Note $ "Read sector head for sector " ++ show sectorId
   return $ show sectorId
 
-readSectorBody :: DiskM [Integer]
+readSectorBody :: DiskM [Int]
 readSectorBody = do
   skipGap
   syncTo xa1
@@ -231,7 +230,7 @@ readSectorBody = do
   readBytes 2
   return res
 
-readImage :: DiskM [(String, [Integer])]
+readImage :: DiskM [(String, [Int])]
 readImage = do
   syncTo x4e
   skipHeader
@@ -247,9 +246,9 @@ readImage = do
            others <- readImageAux
            return $ (hdr, content) : others
 
-writeBinary :: [Integer] -> IO ()
+writeBinary :: [Int] -> IO ()
 writeBinary xs = do
-  writeFile "floppy.img" $ map (toEnum . fromInteger) xs
+  writeFile "floppy.img" $ map toEnum xs
 
 main = do
   -- Get the raw data...
