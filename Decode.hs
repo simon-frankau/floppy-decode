@@ -1,6 +1,7 @@
 module Main where
 
 import Control.Applicative
+import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Lazy
@@ -143,121 +144,96 @@ record = lift . lift . tell . (:[])
 readBits :: Int -> DiskM [Bool]
 readBits i = state $ splitAt i
 
+peekBits :: Int -> DiskM [Bool]
+peekBits i = take i <$> get
+
 finished :: DiskM Bool
 finished = null <$> get
 
-readInt :: DiskM Integer
-readInt = (numberify . unMFM) <$> readBits 16
+readByte :: DiskM Integer
+readByte = (numberify . unMFM) <$> readBits 16
 
-readInts :: Integer -> DiskM [Integer]
-readInts i = sequence $ replicate (fromInteger i) readInt
+readBytes :: Integer -> DiskM [Integer]
+readBytes i = sequence $ replicate (fromInteger i) readByte
 
-tryRead :: Integer -> DiskM Bool
-tryRead expect = do
-  oldState <- get
-  i <- readInt
-  if i == expect
-   then return True
-   else do
-     put oldState
+-- Peek bits, and read them if they're what we expect.
+tryBits :: [Bool] -> DiskM Bool
+tryBits xs = do
+  let i = length xs
+  ys <- peekBits i
+  if xs == ys
+   then do
+     -- We also read the extra clock bit, which depends on following data.
+     readBits $ i + 1
+     return True
+   else
      return False
 
-expect :: String -> [Integer] -> DiskM ()
-expect what (e:es) = do
-  val <- readInt
-  if val == e
-   then expect what es
-   else lift . throwE $ "Expected " ++ what ++ ", got " ++
-                         show val ++ " instead of " ++ show e
-expect _ [] = return ()
+bits :: String -> [Bool]
+bits = map (== '1')
+
+-- Special bit sequences with non-standard clocking.
+xa1 = bits "100010010001001"
+xc2 = bits "101001000100100"
+-- Other constants
+x4e = addMFM $ denumberify 0x4E
+xfe = addMFM $ denumberify 0xFE
+xfc = addMFM $ denumberify 0xFC
+
+expect :: String -> [[Bool]] -> DiskM ()
+expect what es = do
+  b <- and <$> mapM tryBits es
+  unless b $ lift . throwE $ "Failure to read "  ++ what
 
 -- Search for the start of the gap.
-findGap :: DiskM ()
-findGap = do
-  b <- tryRead 0x4E
-  if b
-   then do
-     record $ Note "Found sync"
-     return ()
-   else do
-     record $ Note "Skipping one bit"
-     readBits 1
-     findGap
+syncTo :: [Bool] -> DiskM ()
+syncTo bs = do
+  found <- tryBits bs
+  unless found $ do
+    record $ Note "Skipping one bit"
+    readBits 1
+    syncTo bs
 
 -- Read through the gap.
 skipGap :: DiskM ()
 skipGap = do
-  succeeded <- tryRead 0x4E
-  if succeeded
-   then skipGap
-   else return ()
-
-skipGapAndSync :: DiskM ()
-skipGapAndSync = do
-  skipGap
-  expect "sync" (replicate 12 0x00)
+  succeeded <- tryBits x4e
+  when succeeded $ skipGap
 
 skipHeader :: DiskM ()
 skipHeader = do
-  skipGap -- TODO: Sync
-  skipHeader'
-    where
-      skipHeader' = do
-        b <- tryRead 0xc2
-        if b
-         then expect "IAM" [0xc2, 0xc2, 0xfc]
-         else do
-           record $ Note "Finding IAM"
-           readBits 1
-           skipHeader'
+  skipGap
+  syncTo xc2
+  expect "IAM" [xc2, xc2, xfc]
 
 readSectorHeader :: DiskM String
 readSectorHeader = do
-  skipGap -- TODO: Sync
-  readSectorHeader'
-    where
-      readSectorHeader' = do
-        b <- tryRead 0xa1
-        if b
-          then do
-            expect "IDAM" [0xa1, 0xa1, 0xfe]
-            sectorId <- readInts 4
-            -- Skip CRC
-            readInts 2
-            record $ Note $ "Read sector head for sector " ++ show sectorId
-            return $ show sectorId
-        else do
-          record $ Note "Finding IDAM"
-          readBits 1
-          readSectorHeader'
+  skipGap
+  syncTo xa1
+  expect "IDAM" [xa1, xa1, xfe]
+  sectorId <- readBytes 4
+  -- Skip CRC
+  readBytes 2
+  record $ Note $ "Read sector head for sector " ++ show sectorId
+  return $ show sectorId
 
 readSectorBody :: DiskM [Integer]
 readSectorBody = do
-  skipGap -- TODO: Sync
-  readSectorBody'
-    where
-      readSectorBody' = do
-        b <- tryRead 0xa1
-        if b
-          then do
-            expect "DAM" [0xa1, 0xa1]
-            b <- readInt
-            if b /= 0xfb && b /= 0xf8
-             then lift . throwE $ "Expected DAM, got " ++ show b
-             else do
-               res <- readInts 512
-               record $ Note "Read sector body"
-               -- Skip CRC
-               readInts 2
-               return res
-          else do
-            record $ Note "Finding DAM"
-            readBits 1
-            readSectorBody'
+  skipGap
+  syncTo xa1
+  expect "DAM" [xa1, xa1]
+  b <- readByte
+  when (b /= 0xfb && b /= 0xf8) $
+    lift . throwE $ "Expected DAM, got " ++ show b
+  res <- readBytes 512
+  record $ Note "Read sector body"
+  -- Skip CRC
+  readBytes 2
+  return res
 
 readImage :: DiskM [(String, [Integer])]
 readImage = do
-  findGap
+  syncTo x4e
   skipHeader
   readImageAux
     where
