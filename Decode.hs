@@ -120,18 +120,18 @@ denumberify = L.reverse . take 8 .
 -- CRC = 2 bytes
 -- GAP 3 = 80 bytes 4E
 
-data Log = Note String
-           deriving (Show, Eq, Ord)
-
 -- State holds the bit stream, ExceptT handles errors, Writer holds
 -- the log of events...
-type DiskM = StateT [Bool] (ExceptT String (Writer [Log]))
+type DiskM = StateT [Bool] (ExceptT String (Writer [String]))
 
-record :: Log -> DiskM ()
+record :: String -> DiskM ()
 record = lift . lift . tell . (:[])
 
 readBits :: Int -> DiskM [Bool]
-readBits i = state $ splitAt i
+readBits i = do
+  bits <- state $ splitAt i
+  record $ prettyBits bits
+  return bits
 
 peekBits :: Int -> DiskM [Bool]
 peekBits i = take i <$> get
@@ -177,12 +177,10 @@ expect what es = do
 -- Search for the start of the gap.
 syncTo :: [Bool] -> DiskM ()
 syncTo bs = do
-  record $ Note $ "Looking for " ++ prettyBits bs
   found <- tryBits bs
   end <- finished
   unless (found || end) $ do
     b <- readBits 1
-    record $ Note $ "Skipping: " ++ show b
     syncTo bs
 
 -- Read through the gap.
@@ -190,7 +188,7 @@ skipGap :: DiskM ()
 skipGap = do
   succeeded <- tryBits x4e
   when succeeded $ do
-    record $ Note "Read gap"
+    record "[Read gap]"
     skipGap
 
 skipHeader :: DiskM ()
@@ -198,19 +196,19 @@ skipHeader = do
   skipGap
   syncTo xc2
   expect "IAM" [xc2, xc2, xfc]
-  record $ Note "Read IAM"
+  record "[Read IAM]"
 
 readSectorHeader :: DiskM String
 readSectorHeader = do
   skipGap
   syncTo xa1
   expect "IDAM" [xa1, xa1, xfe]
-  record $ Note "Read IDAM"
+  record "[Read IDAM]"
   sectorId <- readBytes 4
-  record $ Note $ "Sector id: " ++ show sectorId
+  record $ "[Sector id: " ++ show sectorId ++ "]"
   -- Skip CRC
   crc <- readBytes 2
-  record $ Note $ "CRC: " ++ show crc
+  record $ "[CRC: " ++ show crc ++ "]"
   return $ show sectorId
 
 readSectorBody :: DiskM [Int]
@@ -221,12 +219,12 @@ readSectorBody = do
   b <- readByte
   when (b /= 0xfb && b /= 0xf8) $
     lift . throwE $ "Expected DAM, got " ++ show b
-  record $ Note "Read DAM"
+  record "[Read DAM]"
   res <- readBytes 512
-  record $ Note "Read sector body"
+  record "[Read sector body]"
   -- Skip CRC
   crc <- readBytes 2
-  record $ Note $ "CRC: " ++ show crc
+  record $ "[CRC: " ++ show crc ++ "]"
   return res
 
 readImage :: DiskM [(String, [Int])]
@@ -245,35 +243,44 @@ readImage = do
            others <- readImageAux
            return $ (hdr, content) : others
 
-writeBinary :: [Int] -> IO ()
-writeBinary xs = do
-  writeFile "floppy.img" $ map toEnum xs
+writeBinary :: String -> [Int] -> IO ()
+writeBinary fileName xs = do
+  writeFile fileName $ map toEnum xs
 
-process :: String -> Int -> Double -> Double -> Int -> IO ()
-process fileName column lowHyst highHyst bitRate = do
+-- My preferred tools don't like really long lines. Use sane line lengths.
+printLog :: [String] -> IO ()
+printLog log = do
+  let bigLog = concat log
+  let chunks = takeWhile (not . null) $ L.unfoldr (Just . splitAt 72) bigLog
+  mapM_ putStrLn chunks
+
+process :: String -> String -> Int -> Double -> Double -> Int -> IO ()
+process inName outName column lowHyst highHyst bitRate = do
   -- Get the raw data...
-  content <- filter (/= '\r') <$> readFile fileName
+  content <- filter (/= '\r') <$> readFile inName
   let lineData = words' <$> (drop 2 $ lines content)
   -- We only care about the data channel, and want it as doubles...
   let doubleData = denoise $ (read . (!! column)) <$> lineData :: [Double]
   let transitions = transitionTimes lowHyst highHyst  doubleData
-  let histogram = M.toList $ M.fromListWith (+) $ map (\x -> (x, 1)) transitions
+  -- Print histogram of cycle times, from which we can bind an appropriate
+  -- value of bitRate
+  putStrLn "Pulse length histogram:"
+  let histogram = M.toList $ M.fromListWith (+) $
+                  map (\x -> (x, 1)) transitions
   mapM_ (putStrLn . show) histogram
-  -- mapM_ (putStrLn . show . (*1000))  doubleData
-  -- mapM_ (putStrLn . show) transitions
-  -- Get stats on the transitions - they should group nicely...
-  -- printBitStats transitions
-  -- And print the data
+  -- Print the data
+  putStrLn "Source data:"
   let bitStream = toBitPattern $ toBaseBitRate bitRate transitions
-  -- putStrLn $ show $ toBaseBitRate bitRate transitions
-  putStrLn $ show $ prettyBits bitStream
+  putStrLn $ prettyBits bitStream
+  -- And decode it...
+  putStrLn "Interpreted data:"
   -- putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
   let (Right [(_, sect)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
-  mapM_ (putStrLn . show) msgs
-  writeBinary sect
+  printLog msgs
+  writeBinary outName sect
 
 main = do
   -- Old file.
-  process "floppy.csv" 2 0.08 0.3 100
+  process "floppy.csv" "floppy.img" 2 0.08 0.3 100
   -- Process a file with a 5ms pitch on the 'scope.
   -- process "floppy2.csv" 1 0.08 0.2 10
