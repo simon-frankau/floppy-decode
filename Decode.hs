@@ -7,6 +7,7 @@ import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Lazy
 import Control.Monad.Trans.Writer.Lazy
 import qualified Data.List as L
+import qualified Data.Map as M
 
 ------------------------------------------------------------------------
 -- Transform the data into a bitstream
@@ -31,13 +32,13 @@ words' s = case dropWhile (== ',') s of
 
 -- These numbers come from looking at the data...
 highHyst :: Double
-highHyst = 0.3
+highHyst = 0.2
 lowHyst :: Double
 lowHyst = 0.08
 
 -- Smooth the sequences of samples, eliminate point noise stuff
 denoise :: [Double] -> [Double]
-denoise = map (minimum . take 5) . filter (\x -> length x > 5) . L.tails
+denoise = map (minimum . take 5) . filter (not . null) . L.tails
 
 -- Given a stream of numbers, and a high and low hysteresis point,
 -- find the time between low transitions.
@@ -61,8 +62,9 @@ stat str xs =
   putStrLn $ str ++ ": " ++ (show $ minimum xs) ++ " " ++ (show $ maximum xs)
 
 -- The bit rate comes from staring at the data...
+-- This is from a scan with a 5ms pitch on the 'scope.
 bitRate :: Int
-bitRate = 50 -- Very convenient.
+bitRate = 10
 
 -- Print the timing stats for the transitions, make sure the buckets
 -- are nice and distinct...
@@ -188,31 +190,36 @@ syncTo :: [Bool] -> DiskM ()
 syncTo bs = do
   found <- tryBits bs
   unless found $ do
-    record $ Note "Skipping one bit"
-    readBits 1
+    b <- readBits 1
+    record $ Note $ "Skipping: " ++ show b
     syncTo bs
 
 -- Read through the gap.
 skipGap :: DiskM ()
 skipGap = do
   succeeded <- tryBits x4e
-  when succeeded $ skipGap
+  when succeeded $ do
+    record $ Note "Read gap"
+    skipGap
 
 skipHeader :: DiskM ()
 skipHeader = do
   skipGap
   syncTo xc2
   expect "IAM" [xc2, xc2, xfc]
+  record $ Note "Read IAM"
 
 readSectorHeader :: DiskM String
 readSectorHeader = do
   skipGap
   syncTo xa1
   expect "IDAM" [xa1, xa1, xfe]
+  record $ Note "Read IDAM"
   sectorId <- readBytes 4
+  record $ Note $ "Sector id: " ++ show sectorId
   -- Skip CRC
-  readBytes 2
-  record $ Note $ "Read sector head for sector " ++ show sectorId
+  crc <- readBytes 2
+  record $ Note $ "CRC: " ++ show crc
   return $ show sectorId
 
 readSectorBody :: DiskM [Int]
@@ -223,10 +230,12 @@ readSectorBody = do
   b <- readByte
   when (b /= 0xfb && b /= 0xf8) $
     lift . throwE $ "Expected DAM, got " ++ show b
+  record $ Note "Read DAM"
   res <- readBytes 512
   record $ Note "Read sector body"
   -- Skip CRC
-  readBytes 2
+  crc <- readBytes 2
+  record $ Note $ "CRC: " ++ show crc
   return res
 
 readImage :: DiskM [(String, [Int])]
@@ -254,15 +263,19 @@ main = do
   content <- filter (/= '\r') <$> readFile "floppy2.csv"
   let lineData = words' <$> (drop 2 $ lines content)
   -- We only care about the data channel, and want it as doubles...
-  let doubleData = (read . (!! 1)) <$> lineData :: [Double]
-  let transitions = transitionTimes $ denoise doubleData
-  mapM_ (putStrLn . show . (*1000)) $ denoise doubleData
+  let doubleData = denoise $ (read . (!! 1)) <$> lineData :: [Double]
+  let transitions = transitionTimes doubleData
+  let histogram = M.toList $ M.fromListWith (+) $ map (\x -> (x, 1)) transitions
+  mapM_ (putStrLn . show) histogram
+  -- mapM_ (putStrLn . show . (*1000))  doubleData
+  -- mapM_ (putStrLn . show) transitions
   -- Get stats on the transitions - they should group nicely...
   -- printBitStats transitions
   -- And print the data
   let bitStream = toBitPattern $ toBaseBitRate transitions
-  putStrLn $ show $ toBaseBitRate transitions
+  -- putStrLn $ show $ toBaseBitRate transitions
   putStrLn $ show $ prettyBits bitStream
-  putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
-  let (Right [(_, blah)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
-  writeBinary blah
+  -- putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
+  let (_, msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
+  mapM (putStrLn . show) msgs
+  -- writeBinary blah
