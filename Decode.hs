@@ -177,8 +177,10 @@ expect what es = do
 -- Search for the start of the gap.
 syncTo :: [Bool] -> DiskM ()
 syncTo bs = do
+  record $ Note $ "Looking for " ++ prettyBits bs
   found <- tryBits bs
-  unless found $ do
+  end <- finished
+  unless (found || end) $ do
     b <- readBits 1
     record $ Note $ "Skipping: " ++ show b
     syncTo bs
@@ -247,13 +249,13 @@ writeBinary :: [Int] -> IO ()
 writeBinary xs = do
   writeFile "floppy.img" $ map toEnum xs
 
-process :: String -> Double -> Double -> Int -> IO ()
-process fileName lowHyst highHyst bitRate = do
+process :: String -> Int -> Double -> Double -> Int -> IO ()
+process fileName column lowHyst highHyst bitRate = do
   -- Get the raw data...
-  content <- filter (/= '\r') <$> readFile "floppy2.csv"
+  content <- filter (/= '\r') <$> readFile fileName
   let lineData = words' <$> (drop 2 $ lines content)
   -- We only care about the data channel, and want it as doubles...
-  let doubleData = denoise $ (read . (!! 1)) <$> lineData :: [Double]
+  let doubleData = denoise $ (read . (!! column)) <$> lineData :: [Double]
   let transitions = transitionTimes lowHyst highHyst  doubleData
   let histogram = M.toList $ M.fromListWith (+) $ map (\x -> (x, 1)) transitions
   mapM_ (putStrLn . show) histogram
@@ -266,12 +268,12 @@ process fileName lowHyst highHyst bitRate = do
   -- putStrLn $ show $ toBaseBitRate bitRate transitions
   putStrLn $ show $ prettyBits bitStream
   -- putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
-  let (_, msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
+  let (Right [(_, sect)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
   mapM_ (putStrLn . show) msgs
-  -- writeBinary blah
+  writeBinary sect
 
 main = do
   -- Old file.
-  -- process "floppy.csv" 0.08 0.3 50
+  process "floppy.csv" 2 0.08 0.3 100
   -- Process a file with a 5ms pitch on the 'scope.
-  process "floppy2.csv" 0.08 0.2 10
+  -- process "floppy2.csv" 1 0.08 0.2 10
