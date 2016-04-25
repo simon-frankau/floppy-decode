@@ -30,20 +30,14 @@ words' s = case dropWhile (== ',') s of
 -- TODO: Calc properly, with real-world overheads
 -- Also, I've forgotten disks are double-sided...
 
--- These numbers come from looking at the data...
-highHyst :: Double
-highHyst = 0.2
-lowHyst :: Double
-lowHyst = 0.08
-
 -- Smooth the sequences of samples, eliminate point noise stuff
 denoise :: [Double] -> [Double]
 denoise = map (minimum . take 5) . filter (not . null) . L.tails
 
 -- Given a stream of numbers, and a high and low hysteresis point,
 -- find the time between low transitions.
-transitionTimes :: [Double] -> [Int]
-transitionTimes = tt 0 False
+transitionTimes :: Double -> Double -> [Double] -> [Int]
+transitionTimes lowHyst highHyst = tt 0 False
   where
     tt time True (x : xs) | x < lowHyst =
       time : tt 0 False xs
@@ -61,11 +55,6 @@ stat :: String -> [Int] -> IO ()
 stat str xs =
   putStrLn $ str ++ ": " ++ (show $ minimum xs) ++ " " ++ (show $ maximum xs)
 
--- The bit rate comes from staring at the data...
--- This is from a scan with a 5ms pitch on the 'scope.
-bitRate :: Int
-bitRate = 10
-
 -- Print the timing stats for the transitions, make sure the buckets
 -- are nice and distinct...
 printBitStats :: [Int] -> IO ()
@@ -78,8 +67,8 @@ printBitStats transitions = do
   putStrLn $ "Slows " ++ show slow
 
 -- Convert the timings to distinct multiples of the bit rate
-toBaseBitRate :: [Int] -> [Int]
-toBaseBitRate = map (\x -> (x + bitRate `div` 2) `div` bitRate)
+toBaseBitRate :: Int -> [Int] -> [Int]
+toBaseBitRate bitRate = map (\x -> (x + bitRate `div` 2) `div` bitRate)
 
 -- Convert the timings into an actual bit pattern...
 toBitPattern :: [Int] -> [Bool]
@@ -258,13 +247,14 @@ writeBinary :: [Int] -> IO ()
 writeBinary xs = do
   writeFile "floppy.img" $ map toEnum xs
 
-main = do
+process :: String -> Double -> Double -> Int -> IO ()
+process fileName lowHyst highHyst bitRate = do
   -- Get the raw data...
   content <- filter (/= '\r') <$> readFile "floppy2.csv"
   let lineData = words' <$> (drop 2 $ lines content)
   -- We only care about the data channel, and want it as doubles...
   let doubleData = denoise $ (read . (!! 1)) <$> lineData :: [Double]
-  let transitions = transitionTimes doubleData
+  let transitions = transitionTimes lowHyst highHyst  doubleData
   let histogram = M.toList $ M.fromListWith (+) $ map (\x -> (x, 1)) transitions
   mapM_ (putStrLn . show) histogram
   -- mapM_ (putStrLn . show . (*1000))  doubleData
@@ -272,10 +262,16 @@ main = do
   -- Get stats on the transitions - they should group nicely...
   -- printBitStats transitions
   -- And print the data
-  let bitStream = toBitPattern $ toBaseBitRate transitions
-  -- putStrLn $ show $ toBaseBitRate transitions
+  let bitStream = toBitPattern $ toBaseBitRate bitRate transitions
+  -- putStrLn $ show $ toBaseBitRate bitRate transitions
   putStrLn $ show $ prettyBits bitStream
   -- putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
   let (_, msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
-  mapM (putStrLn . show) msgs
+  mapM_ (putStrLn . show) msgs
   -- writeBinary blah
+
+main = do
+  -- Old file.
+  -- process "floppy.csv" 0.08 0.3 50
+  -- Process a file with a 5ms pitch on the 'scope.
+  process "floppy2.csv" 0.08 0.2 10
