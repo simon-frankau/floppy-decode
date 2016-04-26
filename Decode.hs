@@ -166,8 +166,10 @@ xa1 = bits "100010010001001"
 xc2 = bits "101001000100100"
 -- Other constants
 x4e = addMFM $ denumberify 0x4E
-xfe = addMFM $ denumberify 0xFE
+xf8 = addMFM $ denumberify 0xF8
+xfb = addMFM $ denumberify 0xFB
 xfc = addMFM $ denumberify 0xFC
+xfe = addMFM $ denumberify 0xFE
 
 expect :: String -> [[Bool]] -> DiskM ()
 expect what es = do
@@ -183,65 +185,95 @@ syncTo bs = do
     b <- readBits 1
     syncTo bs
 
--- Read through the gap.
-skipGap :: DiskM ()
-skipGap = do
-  succeeded <- tryBits x4e
-  when succeeded $ do
-    record "[Read gap]"
-    skipGap
+findAM :: DiskM [Bool]
+findAM = do
+  hasGap <- tryBits x4e
+  if hasGap
+    then do
+      record "[Read gap]"
+      findAM
+    else do
+      hasXC2 <- tryBits xc2
+      if hasXC2
+        then return xc2
+        else do
+          hasXA1 <- tryBits xa1
+          if hasXA1
+            then return xa1
+            else do
+              done <- finished
+              if done
+                then return []
+                else do
+                  readBits 1
+                  findAM
 
-skipHeader :: DiskM ()
-skipHeader = do
-  skipGap
-  syncTo xc2
+hasReadXC2 :: DiskM ()
+hasReadXC2 = do
+  -- Track header...
   expect "IAM" [xc2, xc2, xfc]
   record "[Read IAM]"
 
-readSectorHeader :: DiskM String
-readSectorHeader = do
-  skipGap
-  syncTo xa1
-  expect "IDAM" [xa1, xa1, xfe]
-  record "[Read IDAM]"
+hasReadXA1 :: DiskM ()
+hasReadXA1 = do
+  -- Is this sector header or body?
+  expect "I?DAM" [xa1, xa1]
+  isIDAM <- tryBits xfe
+  if isIDAM
+    then do
+      record "[Read IDAM]"
+      readIDAM
+    else do
+      isFB <- tryBits xfb
+      if isFB
+        then do
+          record "[Read DAM (FB)]"
+          readDAM
+        else do
+          isF8 <- tryBits xf8
+          if isF8
+            then do
+              record "[Read DAM (F8)]"
+              readDAM
+            else lift . throwE $ "Expected DAM or IDAM"
+
+
+readIDAM :: DiskM ()
+readIDAM = do
   sectorId <- readBytes 4
   record $ "[Sector id: " ++ show sectorId ++ "]"
   -- Skip CRC
   crc <- readBytes 2
   record $ "[CRC: " ++ show crc ++ "]"
-  return $ show sectorId
 
-readSectorBody :: DiskM [Int]
-readSectorBody = do
-  skipGap
-  syncTo xa1
-  expect "DAM" [xa1, xa1]
-  b <- readByte
-  when (b /= 0xfb && b /= 0xf8) $
-    lift . throwE $ "Expected DAM, got " ++ show b
-  record "[Read DAM]"
+readDAM :: DiskM ()
+readDAM = do
   res <- readBytes 512
   record "[Read sector body]"
   -- Skip CRC
   crc <- readBytes 2
   record $ "[CRC: " ++ show crc ++ "]"
-  return res
+  return ()
+
+readItem :: DiskM Bool
+readItem = do
+  b <- findAM
+  if b == xc2
+    then do
+      hasReadXC2
+      return True
+    else if b == xa1
+           then do
+             hasReadXA1
+             return True
+           else return False
 
 readImage :: DiskM [(String, [Int])]
 readImage = do
-  syncTo x4e
-  skipHeader
-  readImageAux
-    where
-      readImageAux = do
-        f <- finished
-        if f
-         then return []
-         else do
-           hdr <- readSectorHeader
-           content <- readSectorBody
-           others <- readImageAux
-           return $ (hdr, content) : others
+  more <- readItem
+  if more
+    then readImage
+    else return []
 
 writeBinary :: String -> [Int] -> IO ()
 writeBinary fileName xs = do
@@ -275,12 +307,14 @@ process inName outName column lowHyst highHyst bitRate = do
   -- And decode it...
   putStrLn "Interpreted data:"
   -- putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
-  let (Right [(_, sect)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
+  -- let (Right [(_, sect)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
+  let (blah, msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
   printLog msgs
-  writeBinary outName sect
+  putStrLn $ show blah
+  -- writeBinary outName sect
 
 main = do
   -- Old file.
-  process "floppy.csv" "floppy.img" 2 0.08 0.3 100
+  -- process "floppy.csv" "floppy.img" 2 0.08 0.3 100
   -- Process a file with a 5ms pitch on the 'scope.
-  -- process "floppy2.csv" 1 0.08 0.2 10
+  process "floppy2.csv" "floppy2.img" 1 0.08 0.2 10
