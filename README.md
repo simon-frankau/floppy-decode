@@ -15,11 +15,11 @@ trying to extract the boot sector from a 1.44MB 3.5" floppy.
 
 ## Where did I get my disk format spec from?
 
-I used a combination of <a
-href="https://books.google.co.uk/books?id=YeALBwAAQBAJ&pg=PA95">this
-book</a> and <a
-href="http://jlgconsult.pagesperso-orange.fr/Atari/diskette/diskette_en.htm">this
-page</a>. MFM is a really neat idea.
+I used a combination of [this
+book](https://books.google.co.uk/books?id=YeALBwAAQBAJ&pg=PA95) and
+[this
+page](http://jlgconsult.pagesperso-orange.fr/Atari/diskette/diskette_en.htm).
+MFM is a really neat idea.
 
 ## Does it work?
 
