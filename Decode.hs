@@ -21,16 +21,6 @@ words' s = case dropWhile (== ',') s of
                where
                  (w, s'') = break (== ',') s'
 
--- Back of the envelope calculation:
--- One revolution in 200ms
--- Each track holds 1.44MB / 80 actual data.
--- That's around 18.8KB per track.
--- Or, with a pile of encoding overhead, 377Kb per track
--- -> Expect 2MHz or so.
---
--- TODO: Calc properly, with real-world overheads
--- Also, I've forgotten disks are double-sided...
-
 -- Smooth the sequences of samples, eliminate point noise stuff
 denoise :: [Double] -> [Double]
 denoise = map (minimum . take 5) . filter (not . null) . L.tails
