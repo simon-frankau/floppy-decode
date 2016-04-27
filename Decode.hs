@@ -204,7 +204,7 @@ readIAM = do
   -- Track header...
   record "[Read IAM]"
 
-readIDAM :: DiskM ()
+readIDAM :: DiskM [Int]
 readIDAM = do
   record "[Read IDAM]"
   sectorId <- readBytes 4
@@ -212,8 +212,9 @@ readIDAM = do
   -- Skip CRC
   crc <- readBytes 2
   record $ "[CRC: " ++ show crc ++ "]"
+  return sectorId
 
-readDAM :: DiskM ()
+readDAM :: DiskM [Int]
 readDAM = do
   record "[Read DAM]"
   res <- readBytes 512
@@ -221,54 +222,44 @@ readDAM = do
   -- Skip CRC
   crc <- readBytes 2
   record $ "[CRC: " ++ show crc ++ "]"
-  return ()
+  return res
 
-readItem :: DiskM Bool
+data Item = Gap
+          | Track
+          | SectorHeader [Int]
+          | SectorData [Int]
+          | Dunno
+            deriving (Show, Eq, Ord)
+
+readItem :: DiskM Item
 readItem = do
-  hasGap <- tryBits x4e
-  if hasGap
-    then do
-      record "[Read gap]"
-      readItem
-    else do
-      hasIAM <- tryBits iam
-      if hasIAM
-        then do
-          readIAM
-          return True
-        else do
-          hasIDAM <- tryBits idam
-          if hasIDAM
-            then do
-              readIDAM
-              return True
-            else do
-              hasDAMF8 <- tryBits damF8
-              if hasDAMF8
-                then do
-                  readDAM
-                  return True
-                else do
-                  hasDAMFB <- tryBits damFB
-                  if hasDAMFB
-                    then do
-                      readDAM
-                      return True
-                    else do
-                      done <- finished
-                      if done
-                        then do
-                          return False
-                        else do
-                          readBits 1
-                          readItem
+  val <- foldlM (\val (pattern, op) ->
+              case val of
+                Just x  -> return val
+                Nothing -> do
+                  found <- tryBits pattern
+                  if found
+                    then Just <$> op
+                    else return Nothing) Nothing
+           [(x4e,   record "[Read gap]" >> return Gap),
+            (iam,   readIAM             >> return Track),
+            (idam,  SectorHeader <$> readIDAM),
+            (damF8, SectorData   <$> readDAM),
+            (damFB, SectorData   <$> readDAM)]
+  case val of
+    Just x -> return x
+    Nothing -> do
+      readBits 1
+      return Dunno
 
-readImage :: DiskM [(String, [Int])]
-readImage = do
-  more <- readItem
-  if more
-    then readImage
-    else return []
+readImage :: DiskM [Item]
+readImage = reverse <$> readImage' [] where
+  readImage' items = do
+    item <- readItem
+    more <- not <$> finished
+    if more
+      then readImage' $ item : items
+      else return items
 
 writeBinary :: String -> [Int] -> IO ()
 writeBinary fileName xs = do
