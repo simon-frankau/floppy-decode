@@ -23,7 +23,22 @@ page</a>. MFM is a really neat idea.
 
 ## Does it work?
 
-Well, I've retrieved data with plausible-looking text in it!
+I've extracted a boot sector that looks good to me!
+
+It's not terribly clever, so if there's a pulse with ambiguous timing
+it might get out of sync, and stay out of sync, and produce bad data.
+:(
+
+## What are these input files?
+
+They're CSVs from my Rigol 1052, sampling from a floppy disk drive.
+They used the "deep memory" facility of the scope. `floppy.csv` is
+using a high sample rate, and only covers about half a sector of data.
+`floppy2.csv` uses a lower rate (the '5ms' setting on the scope, I
+think) and captures about 8 sectors. The trigger is in the middle of
+the sample, so we capture sectors 15, 16, 17, 18, 1, 2, 3, 4! (Which
+nicely demonstrates that it's formatted with 18 sectors per track, and
+sectors are *not* interleaved.)
 
 ## Haskell, really?
 
