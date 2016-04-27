@@ -6,6 +6,7 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Lazy
 import Control.Monad.Trans.Writer.Lazy
+import           Data.Foldable
 import qualified Data.List as L
 import qualified Data.Map as M
 
@@ -198,37 +199,6 @@ syncTo bs = do
     b <- readBits 1
     syncTo bs
 
-findAM :: DiskM [Bool]
-findAM = do
-  hasGap <- tryBits x4e
-  if hasGap
-    then do
-      record "[Read gap]"
-      findAM
-    else do
-      hasIAM <- tryBits iam
-      if hasIAM
-        then return xfc
-        else do
-          hasIDAM <- tryBits idam
-          if hasIDAM
-            then return xfe
-            else do
-              hasDAMF8 <- tryBits damF8
-              if hasDAMF8
-                then return xf8
-                else do
-                  hasDAMFB <- tryBits damFB
-                  if hasDAMFB
-                    then return xfb
-                    else do
-                      done <- finished
-                      if done
-                        then return []
-                        else do
-                          readBits 1
-                          findAM
-
 readIAM :: DiskM ()
 readIAM = do
   -- Track header...
@@ -255,24 +225,43 @@ readDAM = do
 
 readItem :: DiskM Bool
 readItem = do
-  b <- findAM
-  if b == xfc
+  hasGap <- tryBits x4e
+  if hasGap
     then do
-      readIAM
-      return True
-    else if b == xfe
-           then do
-             readIDAM
-             return True
-           else if b == xf8
-                  then do
-                    readDAM
-                    return True
-                  else if b == xfb
+      record "[Read gap]"
+      readItem
+    else do
+      hasIAM <- tryBits iam
+      if hasIAM
+        then do
+          readIAM
+          return True
+        else do
+          hasIDAM <- tryBits idam
+          if hasIDAM
+            then do
+              readIDAM
+              return True
+            else do
+              hasDAMF8 <- tryBits damF8
+              if hasDAMF8
+                then do
+                  readDAM
+                  return True
+                else do
+                  hasDAMFB <- tryBits damFB
+                  if hasDAMFB
                     then do
                       readDAM
                       return True
-                    else return False
+                    else do
+                      done <- finished
+                      if done
+                        then do
+                          return False
+                        else do
+                          readBits 1
+                          readItem
 
 readImage :: DiskM [(String, [Int])]
 readImage = do
