@@ -161,6 +161,14 @@ tryBits xs = do
 bits :: String -> [Bool]
 bits = map (== '1')
 
+glue :: [[Bool]] -> [Bool]
+glue (x:xs@(_:_)) = x ++ (bit : xs')
+  where
+    bit = not (last x || head xs')
+    xs' = glue xs
+glue [xs] = xs
+glue [] = []
+
 -- Special bit sequences with non-standard clocking.
 xa1 = bits "100010010001001"
 xc2 = bits "101001000100100"
@@ -170,6 +178,11 @@ xf8 = addMFM $ denumberify 0xF8
 xfb = addMFM $ denumberify 0xFB
 xfc = addMFM $ denumberify 0xFC
 xfe = addMFM $ denumberify 0xFE
+
+iam = glue [xc2, xc2, xc2, xfc]
+idam = glue [xa1, xa1, xa1, xfe]
+damF8 = glue [xa1, xa1, xa1, xf8]
+damFB = glue [xa1, xa1, xa1, xfb]
 
 expect :: String -> [[Bool]] -> DiskM ()
 expect what es = do
@@ -193,53 +206,37 @@ findAM = do
       record "[Read gap]"
       findAM
     else do
-      hasXC2 <- tryBits xc2
-      if hasXC2
-        then return xc2
+      hasIAM <- tryBits iam
+      if hasIAM
+        then return xfc
         else do
-          hasXA1 <- tryBits xa1
-          if hasXA1
-            then return xa1
+          hasIDAM <- tryBits idam
+          if hasIDAM
+            then return xfe
             else do
-              done <- finished
-              if done
-                then return []
+              hasDAMF8 <- tryBits damF8
+              if hasDAMF8
+                then return xf8
                 else do
-                  readBits 1
-                  findAM
+                  hasDAMFB <- tryBits damFB
+                  if hasDAMFB
+                    then return xfb
+                    else do
+                      done <- finished
+                      if done
+                        then return []
+                        else do
+                          readBits 1
+                          findAM
 
-hasReadXC2 :: DiskM ()
-hasReadXC2 = do
+readIAM :: DiskM ()
+readIAM = do
   -- Track header...
-  expect "IAM" [xc2, xc2, xfc]
   record "[Read IAM]"
-
-hasReadXA1 :: DiskM ()
-hasReadXA1 = do
-  -- Is this sector header or body?
-  expect "I?DAM" [xa1, xa1]
-  isIDAM <- tryBits xfe
-  if isIDAM
-    then do
-      record "[Read IDAM]"
-      readIDAM
-    else do
-      isFB <- tryBits xfb
-      if isFB
-        then do
-          record "[Read DAM (FB)]"
-          readDAM
-        else do
-          isF8 <- tryBits xf8
-          if isF8
-            then do
-              record "[Read DAM (F8)]"
-              readDAM
-            else lift . throwE $ "Expected DAM or IDAM"
-
 
 readIDAM :: DiskM ()
 readIDAM = do
+  record "[Read IDAM]"
   sectorId <- readBytes 4
   record $ "[Sector id: " ++ show sectorId ++ "]"
   -- Skip CRC
@@ -248,6 +245,7 @@ readIDAM = do
 
 readDAM :: DiskM ()
 readDAM = do
+  record "[Read DAM]"
   res <- readBytes 512
   record "[Read sector body]"
   -- Skip CRC
@@ -258,15 +256,23 @@ readDAM = do
 readItem :: DiskM Bool
 readItem = do
   b <- findAM
-  if b == xc2
+  if b == xfc
     then do
-      hasReadXC2
+      readIAM
       return True
-    else if b == xa1
+    else if b == xfe
            then do
-             hasReadXA1
+             readIDAM
              return True
-           else return False
+           else if b == xf8
+                  then do
+                    readDAM
+                    return True
+                  else if b == xfb
+                    then do
+                      readDAM
+                      return True
+                    else return False
 
 readImage :: DiskM [(String, [Int])]
 readImage = do
