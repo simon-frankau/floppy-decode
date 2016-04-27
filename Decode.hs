@@ -123,10 +123,10 @@ denumberify = L.reverse . take 8 .
 
 -- State holds the bit stream, ExceptT handles errors, Writer holds
 -- the log of events...
-type DiskM = StateT [Bool] (ExceptT String (Writer [String]))
+type DiskM = StateT [Bool] (Writer [String])
 
 record :: String -> DiskM ()
-record = lift . lift . tell . (:[])
+record = lift . tell . (:[])
 
 readBits :: Int -> DiskM [Bool]
 readBits i = do
@@ -184,11 +184,6 @@ iam = glue [xc2, xc2, xc2, xfc]
 idam = glue [xa1, xa1, xa1, xfe]
 damF8 = glue [xa1, xa1, xa1, xf8]
 damFB = glue [xa1, xa1, xa1, xfb]
-
-expect :: String -> [[Bool]] -> DiskM ()
-expect what es = do
-  b <- and <$> mapM tryBits es
-  unless b $ lift . throwE $ "Failure to read "  ++ what
 
 -- Search for the start of the gap.
 syncTo :: [Bool] -> DiskM ()
@@ -272,10 +267,40 @@ printLog log = do
   let chunks = takeWhile (not . null) $ L.unfoldr (Just . splitAt 72) bigLog
   mapM_ putStrLn chunks
 
-process :: String -> String -> Int -> Double -> Double -> Int -> IO ()
-process inName outName column lowHyst highHyst bitRate = do
+processItems :: String -> [Item] -> IO ()
+processItems name items = foldlM processItem Nothing items >> return ()
+  where
+    processItem :: Maybe String -> Item -> IO (Maybe String)
+    processItem x Gap   = return x
+    processItem x Dunno = return x
+    processItem x Track = clearState x
+    processItem x (SectorHeader h) = clearState x >> return (Just $ fileName h)
+    processItem x (SectorData xs) = writeSector x xs >> return Nothing
+
+    clearState :: Maybe String -> IO (Maybe String)
+    clearState (Just x) = do
+      putStrLn $ "Missing data for sector header " ++ x
+      return Nothing
+    clearState Nothing = return Nothing
+
+    fileName :: [Int] -> String
+    fileName [c, h, s, _] = name ++ "_" ++ c' ++ "_" ++ h' ++ "_" ++ s'
+      where
+        c' = show $ c + (s `div` 64) * 256
+        h' = show h
+        s' = show $ s `mod` 64
+
+    writeSector :: Maybe String -> [Int] -> IO ()
+    writeSector Nothing _ = do
+      putStrLn $ "Missing header for sector data"
+    writeSector (Just fname) sector = do
+      writeBinary (fname ++ ".img") sector
+      putStrLn $ "Wrote " ++ fname
+
+process :: String -> Int -> Double -> Double -> Int -> IO ()
+process name column lowHyst highHyst bitRate = do
   -- Get the raw data...
-  content <- filter (/= '\r') <$> readFile inName
+  content <- filter (/= '\r') <$> readFile (name ++ ".csv")
   let lineData = words' <$> (drop 2 $ lines content)
   -- We only care about the data channel, and want it as doubles...
   let doubleData = denoise $ (read . (!! column)) <$> lineData :: [Double]
@@ -292,15 +317,12 @@ process inName outName column lowHyst highHyst bitRate = do
   putStrLn $ prettyBits bitStream
   -- And decode it...
   putStrLn "Interpreted data:"
-  -- putStrLn $ show $ runWriter $ runExceptT $ runStateT readImage bitStream
-  -- let (Right [(_, sect)], msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
-  let (blah, msgs) = runWriter $ runExceptT $ evalStateT readImage bitStream
+  let (items, msgs) = runWriter $ evalStateT readImage bitStream
   printLog msgs
-  putStrLn $ show blah
-  -- writeBinary outName sect
+  processItems name items
 
 main = do
   -- Old file.
-  -- process "floppy.csv" "floppy.img" 2 0.08 0.3 100
+  -- process "floppy" 2 0.08 0.3 100
   -- Process a file with a 5ms pitch on the 'scope.
-  process "floppy2.csv" "floppy2.img" 1 0.08 0.2 10
+  process "floppy2" 1 0.08 0.2 10
