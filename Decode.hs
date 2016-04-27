@@ -3,9 +3,9 @@ module Main where
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Lazy
 import Control.Monad.Trans.Writer.Lazy
+import qualified Data.ByteString as B
 import           Data.Foldable
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -254,11 +254,11 @@ readImage = reverse <$> readImage' [] where
     more <- not <$> finished
     if more
       then readImage' $ item : items
-      else return items
+      else return $ item : items
 
 writeBinary :: String -> [Int] -> IO ()
 writeBinary fileName xs = do
-  writeFile fileName $ map toEnum xs
+  B.writeFile fileName $ B.pack $ map fromIntegral xs
 
 -- My preferred tools don't like really long lines. Use sane line lengths.
 printLog :: [String] -> IO ()
