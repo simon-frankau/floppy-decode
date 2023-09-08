@@ -1,5 +1,8 @@
 # floppy-decode
 
+![An oscilloscope screenshot, showing data read from a floppy
+disk.](./floppy-data.png)
+
 ## What is this?
 
 This is a tool to, given a waveform from an oscilloscope connected to
@@ -24,6 +27,11 @@ MFM is a really neat idea.
 ## Does it work?
 
 I've extracted a boot sector that looks good to me!
+
+For more details, look at https://arbitrary.name/blog/all/floppy.html
+for the hardware side, and
+https://arbitrary.name/blog/all/floppy2.html for the software, on my
+blog.
 
 It's not terribly clever, so if there's a pulse with ambiguous timing
 it might get out of sync, and stay out of sync, and produce bad data.
